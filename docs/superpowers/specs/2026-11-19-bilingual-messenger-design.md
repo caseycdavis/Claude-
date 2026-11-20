@@ -304,16 +304,18 @@ Each phase leaves something usable.
 
 ## 14. How it gets made (my calls)
 
-- One TypeScript program on Node 22, one database file (SQLite), web app in React, packaged
-  as a single container image.
+- One TypeScript program on Node 22, one database file (SQLite), web app in React. It runs
+  directly on macOS; a container image is kept as an option for a rented machine.
 - Baileys pinned to the exact version `7.0.0-rc14`; upgrades are deliberate.
 - Anthropic's official TypeScript SDK for translation.
 - Tests run against the stand-in transport. The WhatsApp link gets a short manual check-list
   Casey runs with his phone, because it cannot be exercised from the build session.
-- Casey is not expected to use a terminal. Setup is done by clicking through a hosting
-  provider's website with written steps; linking WhatsApp happens inside the app. Updates,
-  including a new version of the WhatsApp library, arrive by the machine rebuilding itself
-  from this repository when a change is pushed.
+- Casey is not expected to work in a terminal. Install and updates on the Mac mini,
+  including a new version of the WhatsApp library, are done by a Claude Code session running
+  on that Mac: it pulls this repository, builds, and restarts the program. Linking WhatsApp
+  happens inside the app.
+- The Mac mini can reach WhatsApp, which the cloud build session cannot, so the live link is
+  tested there.
 
 ## 15. Left to the builder
 
@@ -326,19 +328,16 @@ Each phase leaves something usable.
 
 ## 16. Open for Casey
 
-1. **Where it runs.** It needs a machine that is on all day, with a disk that survives
-   restarts and a secure address Casey's phone can reach. This choice decides how the secure
-   address is obtained, how updates arrive and who maintains the machine.
-   - *Rented (my recommendation).* A small hosted machine that rebuilds itself from this
-     repository. Public secure address included, no terminal, nothing at home to keep
-     running. Roughly $5 a month: Fly.io's price list effective October 1, 2026 shows $4.39
-     a month for its 512 MB machine, with disk at about $0.15 per GB per month reported by
-     third parties. The specific provider is picked in the plan after checking it against
-     the needs above. The session files sit on a machine on the public internet, protected
-     by the sign-in.
-   - *At home.* A computer that never sleeps, reached through a private tunnel. No monthly
-     fee and the session files never leave the house, but Casey keeps it running and
-     updates take a manual step.
+1. **Where it runs: Casey's always-on Mac mini at home** (Casey, November 20, 2026).
+   - The program is installed and runs on the Mac mini itself. It holds the WhatsApp
+     connection and serves the app, so the Mac being on is necessary but not sufficient.
+   - The Mac must be set never to sleep and to start up again after a power failure. The
+     program is registered to start by itself when the Mac boots.
+   - Casey's phone reaches it through a private tunnel, so nothing is opened to the public
+     internet and the session files never leave the house. The tunnel product is picked in
+     the plan after checking that it gives the secure address the Home Screen app needs.
+   - No monthly hosting fee. A rented machine (roughly $5 a month) stays available as a
+     fallback; the program is the same.
 2. **Sample lines.** Ten to twenty real messages, his and Casey's, where translators got it
    wrong, each with what was meant. Given to the build session directly, not committed.
 3. **Keys.** An Anthropic API key is required from phase 1. A speech-to-text key is needed
