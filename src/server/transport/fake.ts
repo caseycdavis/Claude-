@@ -5,6 +5,10 @@ export class FakeTransport implements Transport {
   readonly sent: string[] = [];
   readonly read: string[] = [];
   failSend = false;
+  /** When true, a sent message is echoed back before the send returns, as WhatsApp can do. */
+  echoOnSend = false;
+  /** Runs in the middle of a send, before it returns. */
+  onSend: (() => void) | null = null;
   chat: string | null = null;
 
   private readonly handlers: ((e: TransportEvent) => void)[] = [];
@@ -33,7 +37,11 @@ export class FakeTransport implements Transport {
     if (this.failSend) throw new Error('The stand-in link was told to fail this send.');
     this.sent.push(text);
     this.counter += 1;
-    return { waId: `fake-out-${this.counter}`, ts: this.now() };
+    const waId = `fake-out-${this.counter}`;
+    await Promise.resolve();
+    if (this.echoOnSend) this.emitRaw({ waId, fromMe: true, ts: this.now(), kind: 'text', text });
+    this.onSend?.();
+    return { waId, ts: this.now() };
   }
 
   async markRead(waIds: string[]): Promise<void> {

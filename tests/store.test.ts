@@ -105,6 +105,15 @@ describe('Store', () => {
     expect(s.recentContext(1)).toEqual([{ speaker: 'Juan', text: 'listo' }]);
   });
 
+  test('recentContext with a before time returns only older messages', () => {
+    const s = new Store(':memory:');
+    s.insertMessage(msg({ id: 'a', ts: 1, original: 'uno' }));
+    s.insertMessage(msg({ id: 'b', ts: 2, original: 'dos' }));
+    s.insertMessage(msg({ id: 'c', ts: 3, original: 'tres' }));
+    expect(s.recentContext(10, 3).map((c) => c.text)).toEqual(['uno', 'dos']);
+    expect(s.recentContext(10, 1)).toEqual([]);
+  });
+
   test('markRead returns only newly marked waIds', () => {
     const s = new Store(':memory:');
     s.insertMessage(msg({ id: 'a', waId: 'W1' }));

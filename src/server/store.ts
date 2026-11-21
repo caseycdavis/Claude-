@@ -146,11 +146,11 @@ export class Store {
     return rows.reverse().map(fromRow);
   }
 
-  /** The most recent text messages in their authors' own words, oldest first. */
-  recentContext(limit: number): ContextLine[] {
+  /** The most recent text messages (older than `before` when given) in their authors' own words, oldest first. */
+  recentContext(limit: number, before?: number): ContextLine[] {
     const rows = this.db
-      .prepare("SELECT direction, original FROM messages WHERE kind = 'text' ORDER BY ts DESC, rowid DESC LIMIT ?")
-      .all(limit) as { direction: string; original: string }[];
+      .prepare("SELECT direction, original FROM messages WHERE kind = 'text' AND ts < ? ORDER BY ts DESC, rowid DESC LIMIT ?")
+      .all(before ?? Number.MAX_SAFE_INTEGER, limit) as { direction: string; original: string }[];
     return rows.reverse().map((r) => ({ speaker: r.direction === 'in' ? 'Juan' : 'Casey', text: r.original }));
   }
 
