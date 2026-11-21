@@ -41,7 +41,9 @@ export type LinkStatus = { state: LinkState; qr: string | null; pairingCode: str
 export type InboundMessage = { waId: string; fromMe: boolean; ts: number; kind: 'text' | 'other'; text: string };
 export type TransportEvent =
   | { type: 'message'; message: InboundMessage }
-  | { type: 'status'; status: LinkStatus };
+  | { type: 'status'; status: LinkStatus }
+  /** WhatsApp refused a message this program sent. */
+  | { type: 'send-failed'; waId: string };
 
 export interface Transport {
   start(): Promise<void>;

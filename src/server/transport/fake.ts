@@ -10,6 +10,8 @@ export class FakeTransport implements Transport {
   /** Runs in the middle of a send, before it returns. */
   onSend: (() => void) | null = null;
   chat: string | null = null;
+  /** WhatsApp id of the most recent message sent through this stand-in. */
+  lastSentId: string | null = null;
 
   private readonly handlers: ((e: TransportEvent) => void)[] = [];
   private current: LinkStatus = { state: 'linked', qr: null, pairingCode: null, since: 0 };
@@ -38,6 +40,7 @@ export class FakeTransport implements Transport {
     this.sent.push(text);
     this.counter += 1;
     const waId = `fake-out-${this.counter}`;
+    this.lastSentId = waId;
     await Promise.resolve();
     if (this.echoOnSend) this.emitRaw({ waId, fromMe: true, ts: this.now(), kind: 'text', text });
     this.onSend?.();
@@ -74,6 +77,11 @@ export class FakeTransport implements Transport {
   emitRaw(message: InboundMessage): InboundMessage {
     this.emit({ type: 'message', message });
     return message;
+  }
+
+  /** Plays WhatsApp refusing a message after it was handed over. */
+  emitSendFailed(waId: string): void {
+    this.emit({ type: 'send-failed', waId });
   }
 
   private emit(e: TransportEvent): void {

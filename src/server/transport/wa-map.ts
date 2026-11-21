@@ -117,3 +117,55 @@ export function toInbound(
   const known = kinds.find((k) => LABELS[k] !== undefined);
   return { ...base, kind: 'other', text: known ? LABELS[known]! : 'A message this app cannot show' };
 }
+
+export type RawMessage = { key: KeyLike; message?: any; messageTimestamp?: unknown };
+
+/**
+ * Holds which chat is allowed and decides, message by message, what may pass.
+ * Everything that is not the allowed one-to-one chat stops here.
+ */
+export class ChatFilter {
+  private current: ChatMatcher;
+  private readonly onLid?: (lid: string) => void;
+
+  constructor(opts: { lid: string | null; onLid?: (lid: string) => void }) {
+    this.current = { digits: null, lid: opts.lid };
+    this.onLid = opts.onLid;
+  }
+
+  get matcher(): ChatMatcher {
+    return this.current;
+  }
+
+  setChat(phoneDigits: string | null): void {
+    const digits = phoneDigits && phoneDigits !== '' ? phoneDigits : null;
+    if (digits === this.current.digits) return;
+    // A LID loaded at start-up belongs to the number applied first, so it is kept for that one assignment.
+    const firstAssignment = this.current.digits === null && digits !== null;
+    this.current = { digits, lid: firstAssignment ? this.current.lid : null };
+  }
+
+  matches(key: KeyLike): boolean {
+    return matchesChat(key, this.current);
+  }
+
+  rememberLid(raw: string): void {
+    const lid = normalize(raw);
+    if (!isLid(lid) || lid === this.current.lid) return;
+    this.current = { ...this.current, lid };
+    this.onLid?.(lid);
+  }
+
+  /** Returns only the messages of the allowed chat, in the form this program stores, with their original keys. */
+  accept(messages: RawMessage[], now: () => number = Date.now): { inbound: InboundMessage; key: KeyLike }[] {
+    const out: { inbound: InboundMessage; key: KeyLike }[] = [];
+    for (const m of messages) {
+      if (!m?.key || !matchesChat(m.key, this.current)) continue;
+      const lid = learnLid(m.key, this.current);
+      if (lid) this.rememberLid(lid);
+      const inbound = toInbound(m, now);
+      if (inbound) out.push({ inbound, key: m.key });
+    }
+    return out;
+  }
+}

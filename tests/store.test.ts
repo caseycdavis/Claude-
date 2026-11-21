@@ -82,13 +82,48 @@ describe('Store', () => {
     expect(() => s.updateMessage('missing', { status: 'done' })).toThrow();
   });
 
-  test('listMessages returns oldest first and honours before and limit', () => {
+  test('listMessages returns oldest first and pages back from a message', () => {
     const s = new Store(':memory:');
     for (const ts of [10, 20, 30, 40]) s.insertMessage(msg({ id: `m${ts}`, ts }));
     expect(s.listMessages({ limit: 10 }).map((m) => m.ts)).toEqual([10, 20, 30, 40]);
     expect(s.listMessages({ limit: 2 }).map((m) => m.ts)).toEqual([30, 40]);
-    expect(s.listMessages({ before: 30, limit: 10 }).map((m) => m.ts)).toEqual([10, 20]);
-    expect(s.listMessages({ before: 40, limit: 1 }).map((m) => m.ts)).toEqual([30]);
+    expect(s.listMessages({ beforeId: 'm30', limit: 10 }).map((m) => m.ts)).toEqual([10, 20]);
+    expect(s.listMessages({ beforeId: 'm40', limit: 1 }).map((m) => m.ts)).toEqual([30]);
+    expect(s.listMessages({ beforeId: 'missing', limit: 10 })).toEqual([]);
+  });
+
+  test('paging back does not skip messages that share a timestamp', () => {
+    const s = new Store(':memory:');
+    for (const id of ['a', 'b', 'c', 'd', 'e']) s.insertMessage(msg({ id, ts: 5000 }));
+    const lastPage = s.listMessages({ limit: 2 }).map((m) => m.id);
+    expect(lastPage).toEqual(['d', 'e']);
+    const middle = s.listMessages({ beforeId: 'd', limit: 2 }).map((m) => m.id);
+    expect(middle).toEqual(['b', 'c']);
+    expect(s.listMessages({ beforeId: 'b', limit: 2 }).map((m) => m.id)).toEqual(['a']);
+  });
+
+  test('failStaleTranslations turns rows left on translating into failed ones', () => {
+    const s = new Store(':memory:');
+    s.insertMessage(msg({ id: 'a', status: 'translating' }));
+    s.insertMessage(msg({ id: 'b', status: 'done', translation: 'x' }));
+    expect(s.failStaleTranslations()).toBe(1);
+    expect(s.getMessage('a')!.status).toBe('failed');
+    expect(s.getMessage('b')!.status).toBe('done');
+    expect(s.failStaleTranslations()).toBe(0);
+  });
+
+  test('a message can be found by its WhatsApp id', () => {
+    const s = new Store(':memory:');
+    s.insertMessage(msg({ id: 'a', waId: 'W1' }));
+    expect(s.getMessageByWaId('W1')!.id).toBe('a');
+    expect(s.getMessageByWaId('nope')).toBeNull();
+  });
+
+  test('the exact text of a sent message is kept by its WhatsApp id', () => {
+    const s = new Store(':memory:');
+    expect(s.getSentBody('W1')).toBeNull();
+    s.saveSentBody('W1', 'esperame\n\nwait for me');
+    expect(s.getSentBody('W1')).toBe('esperame\n\nwait for me');
   });
 
   test('recentContext labels in as Juan and out as Casey and skips kind other', () => {

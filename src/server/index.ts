@@ -31,6 +31,7 @@ async function main(): Promise<void> {
         authDir,
         lid: store.getSetting('juan_lid'),
         onLid: (lid) => store.setSetting('juan_lid', lid),
+        getSentText: (waId) => store.getSentBody(waId),
         log,
       });
   transport.setChat(store.getSetting('juan_number'));
@@ -56,11 +57,16 @@ async function main(): Promise<void> {
   const conversation = new ConversationService({ store, translator, transport, bus });
   conversation.start();
 
-  const app = buildApp({ config, store, bus, transport, conversation, clientFor });
-  if (config.demo) {
-    const { registerDemoRoutes } = await import('./http/demo.js');
-    registerDemoRoutes(app, transport as FakeTransport);
-  }
+  const demoRoutes = config.demo ? (await import('./http/demo.js')).registerDemoRoutes : null;
+  const app = buildApp({
+    config,
+    store,
+    bus,
+    transport,
+    conversation,
+    clientFor,
+    extraRoutes: demoRoutes ? (api) => demoRoutes(api, transport as FakeTransport) : undefined,
+  });
 
   await app.listen({ port: config.port, host: config.host });
   log(`parce is listening on http://${config.host}:${config.port}${config.demo ? ' (demo mode, nothing is sent anywhere)' : ''}`);
@@ -83,6 +89,11 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
 }
+
+// One stray failure in a background task must not take the whole program, and the WhatsApp link, down with it.
+process.on('unhandledRejection', (e: unknown) => {
+  log(`unhandled failure: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+});
 
 main().catch((e: unknown) => {
   console.error(e);

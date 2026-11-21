@@ -11,6 +11,26 @@ const CHIPS: { tone: Exclude<Tone, 'base'>; label: string }[] = [
 
 type Phase = 'idle' | 'working' | 'preview' | 'sending';
 
+const DRAFT_KEY = 'parce.draft';
+
+/** The unsent draft is kept for this browser tab, so opening Settings or reloading does not lose it. */
+function loadDraft(): string {
+  try {
+    return window.sessionStorage.getItem(DRAFT_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function saveDraft(text: string): void {
+  try {
+    if (text === '') window.sessionStorage.removeItem(DRAFT_KEY);
+    else window.sessionStorage.setItem(DRAFT_KEY, text);
+  } catch {
+    // Storage can be unavailable in private windows. The draft then lives only on screen.
+  }
+}
+
 function message(e: unknown): string {
   return e instanceof ApiError ? e.message : 'That did not work. Your draft is kept.';
 }
@@ -24,7 +44,11 @@ export function Composer({
   linkState: LinkState;
   onSent: (m: Message) => void;
 }) {
-  const [text, setText] = useState('');
+  const [text, setTextState] = useState(loadDraft);
+  const setText = (value: string) => {
+    setTextState(value);
+    saveDraft(value);
+  };
   const [phase, setPhase] = useState<Phase>('idle');
   const [preview, setPreview] = useState<Preview | null>(null);
   const [tone, setTone] = useState<Tone>('base');
@@ -91,7 +115,8 @@ export function Composer({
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // Return only ever opens the preview. With preview off it makes a new line, so a slip of the thumb cannot send.
+    if (previewBeforeSend && e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       primary();
     }

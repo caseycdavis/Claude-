@@ -95,7 +95,7 @@ export function Chat({ state, onOpenSettings }: { state: AppState; onOpenSetting
   async function loadEarlier() {
     const oldest = messages[0];
     if (!oldest) return;
-    const { messages: earlier } = await api.messages(oldest.ts);
+    const { messages: earlier } = await api.messages(oldest.id);
     setMessages((current) => earlier.reduce(upsert, current));
     setHasEarlier(earlier.length === PAGE);
   }

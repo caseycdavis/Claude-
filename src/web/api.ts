@@ -56,8 +56,9 @@ export const api = {
     appendEnglish?: boolean;
   }) => call<void>('PUT', '/api/settings', settings),
   models: () => call<{ models: ModelChoice[]; suggested: string | null }>('GET', '/api/models'),
-  messages: (before?: number) =>
-    call<{ messages: Message[] }>('GET', `/api/messages?limit=${PAGE}${before === undefined ? '' : `&before=${before}`}`),
+  /** The newest page, or the page before the message with the given id. */
+  messages: (beforeId?: string) =>
+    call<{ messages: Message[] }>('GET', `/api/messages?limit=${PAGE}${beforeId === undefined ? '' : `&before=${encodeURIComponent(beforeId)}`}`),
   draft: (text: string, tone: Tone) => call<Preview>('POST', '/api/draft', { text, tone }),
   send: (input: { english: string; spanish: string; back?: string }) => call<Message>('POST', '/api/send', input),
   retry: (id: string) => call<Message>('POST', `/api/messages/${encodeURIComponent(id)}/retry`),

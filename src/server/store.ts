@@ -33,6 +33,8 @@ const COLUMNS: Record<keyof Message, string> = {
   read: 'read',
 };
 
+const SENT_BODY_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+
 function parseNotes(raw: string): Note[] {
   try {
     const v: unknown = JSON.parse(raw);
@@ -92,6 +94,7 @@ export class Store {
       CREATE UNIQUE INDEX IF NOT EXISTS messages_wa_id ON messages (wa_id) WHERE wa_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS messages_ts ON messages (ts);
       CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS sent_bodies (wa_id TEXT PRIMARY KEY, body TEXT NOT NULL, ts INTEGER NOT NULL);
     `);
   }
 
@@ -135,15 +138,43 @@ export class Store {
     return row ? fromRow(row) : null;
   }
 
-  /** The newest `limit` messages (older than `before` when given), returned oldest first. */
-  listMessages(opts: { before?: number; limit: number }): Message[] {
+  /** The newest `limit` messages (those before the message `beforeId` when given), returned oldest first. */
+  listMessages(opts: { beforeId?: string; limit: number }): Message[] {
     const rows =
-      opts.before === undefined
+      opts.beforeId === undefined
         ? (this.db.prepare('SELECT * FROM messages ORDER BY ts DESC, rowid DESC LIMIT ?').all(opts.limit) as Row[])
-        : (this.db
-            .prepare('SELECT * FROM messages WHERE ts < ? ORDER BY ts DESC, rowid DESC LIMIT ?')
-            .all(opts.before, opts.limit) as Row[]);
+        : // Compared on (time, insertion order), so messages sharing a second are never skipped.
+          (this.db
+            .prepare(
+              `SELECT m.* FROM messages m, (SELECT ts, rowid AS rid FROM messages WHERE id = ?) c
+               WHERE (m.ts, m.rowid) < (c.ts, c.rid) ORDER BY m.ts DESC, m.rowid DESC LIMIT ?`,
+            )
+            .all(opts.beforeId, opts.limit) as Row[]);
     return rows.reverse().map(fromRow);
+  }
+
+  getMessageByWaId(waId: string): Message | null {
+    const row = this.db.prepare('SELECT * FROM messages WHERE wa_id = ?').get(waId) as Row | undefined;
+    return row ? fromRow(row) : null;
+  }
+
+  /** A translation interrupted by a restart never finishes. Mark those rows failed so they can be retried. */
+  failStaleTranslations(): number {
+    const result = this.db.prepare("UPDATE messages SET status = 'failed' WHERE status = 'translating'").run();
+    return Number(result.changes);
+  }
+
+  /** The exact text handed to WhatsApp, kept so it can be sent again if the other phone asks for it. */
+  saveSentBody(waId: string, body: string, now: number = Date.now()): void {
+    this.db
+      .prepare('INSERT INTO sent_bodies (wa_id, body, ts) VALUES (?, ?, ?) ON CONFLICT(wa_id) DO UPDATE SET body = excluded.body')
+      .run(waId, body, now);
+    this.db.prepare('DELETE FROM sent_bodies WHERE ts < ?').run(now - SENT_BODY_KEEP_MS);
+  }
+
+  getSentBody(waId: string): string | null {
+    const row = this.db.prepare('SELECT body FROM sent_bodies WHERE wa_id = ?').get(waId) as { body: string } | undefined;
+    return row ? row.body : null;
   }
 
   /** The most recent text messages (older than `before` when given) in their authors' own words, oldest first. */

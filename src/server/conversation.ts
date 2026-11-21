@@ -23,6 +23,8 @@ export class ConversationService {
   private sending = 0;
   /** Messages marked as "from me" that arrived while a send was in flight; they may be its echo. */
   private held: InboundMessage[] = [];
+  /** Delivery errors that arrived before the send they belong to had stored its row. */
+  private heldFailures: string[] = [];
   private readonly now: () => number;
 
   constructor(
@@ -38,8 +40,11 @@ export class ConversationService {
   }
 
   start(): void {
+    // Translations cut off by the last shutdown would otherwise say "Translating" forever.
+    this.deps.store.failStaleTranslations();
     this.deps.transport.subscribe((e) => {
       if (e.type === 'status') this.deps.bus.publish({ type: 'link', status: e.status });
+      else if (e.type === 'send-failed') this.onSendFailed(e.waId);
       else this.onInbound(e.message);
     });
   }
@@ -88,6 +93,7 @@ export class ConversationService {
     let message: Message;
     try {
       const sent = await transport.sendText(body);
+      store.saveSentBody(sent.waId, body, this.now());
       message = {
         id: randomUUID(),
         waId: sent.waId,
@@ -155,6 +161,21 @@ export class ConversationService {
     const held = this.held;
     this.held = [];
     for (const m of held) this.onInbound(m);
+    const failures = this.heldFailures;
+    this.heldFailures = [];
+    for (const waId of failures) this.onSendFailed(waId);
+  }
+
+  /** WhatsApp refused a message after taking it. Say so on the bubble instead of leaving it marked sent. */
+  private onSendFailed(waId: string): void {
+    if (this.sending > 0) {
+      this.heldFailures.push(waId);
+      return;
+    }
+    const { store, bus } = this.deps;
+    const m = store.getMessageByWaId(waId);
+    if (!m || m.direction !== 'out' || m.status === 'failed') return;
+    bus.publish({ type: 'message', message: store.updateMessage(m.id, { status: 'failed' }) });
   }
 
   private onInbound(m: InboundMessage): void {

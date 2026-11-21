@@ -64,6 +64,9 @@ beforeEach(async () => {
     conversation,
     clientFor: () => fakeClient(),
     now: () => clock,
+    extraRoutes: (api) => {
+      api.post('/demo/ping', async () => ({ pong: true }));
+    },
   });
   app.addHook('onSend', async (_req, _reply, payload) => {
     if (typeof payload === 'string') bodies.push(payload);
@@ -195,6 +198,50 @@ describe('sign-in', () => {
   });
 });
 
+describe('the sign-in gate cannot be sidestepped', () => {
+  test('a percent-encoded spelling of an API path is still refused without a session', async () => {
+    await signIn();
+    transport.emitFromJuan('secreto');
+
+    const get = await app.inject({ method: 'GET', url: '/%61pi/messages' });
+    expect(get.statusCode).toBe(401);
+    expect(get.body).not.toContain('secreto');
+
+    const put = await app.inject({ method: 'PUT', url: '/%61pi/settings', payload: { juanNumber: '15550001111' } });
+    expect(put.statusCode).toBe(401);
+    expect(transport.chat).toBeNull();
+    expect(store.getSetting('juan_number')).toBeNull();
+
+    const post = await app.inject({ method: 'POST', url: '/%61pi/send', payload: { english: 'x', spanish: 'y' } });
+    expect(post.statusCode).toBe(401);
+    expect(transport.sent).toHaveLength(0);
+
+    const upper = await app.inject({ method: 'GET', url: '/API/messages' });
+    expect(upper.statusCode).not.toBe(200);
+  });
+
+  test('routes added by the demo mode sit behind the same gate', async () => {
+    expect((await app.inject({ method: 'POST', url: '/api/demo/ping' })).statusCode).toBe(401);
+    const cookies = await signIn();
+    const res = await app.inject({ method: 'POST', url: '/api/demo/ping', cookies });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ pong: true });
+  });
+
+  test('the cross-site check also covers an encoded path', async () => {
+    const cookies = await signIn();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/%61pi/send',
+      cookies,
+      headers: { origin: 'https://evil.example', host: 'parce.local' },
+      payload: { english: 'x', spanish: 'y' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(transport.sent).toHaveLength(0);
+  });
+});
+
 describe('settings', () => {
   test('saving a key checks it, stores it, picks a model, and never echoes it back', async () => {
     const cookies = await signIn();
@@ -275,6 +322,16 @@ describe('messages', () => {
     expect(res.json().messages.map((m: { original: string }) => m.original)).toEqual(['uno', 'dos']);
   });
 
+  test('GET messages pages back from a message id', async () => {
+    const cookies = await signIn();
+    transport.emitFromJuan('uno');
+    transport.emitFromJuan('dos');
+    transport.emitFromJuan('tres');
+    const all = (await app.inject({ method: 'GET', url: '/api/messages', cookies })).json().messages as { id: string; original: string }[];
+    const res = await app.inject({ method: 'GET', url: `/api/messages?before=${all[2]!.id}&limit=1`, cookies });
+    expect(res.json().messages.map((m: { original: string }) => m.original)).toEqual(['dos']);
+  });
+
   test('POST draft returns the Spanish and its literal reading', async () => {
     const cookies = await signIn();
     const res = await app.inject({ method: 'POST', url: '/api/draft', cookies, payload: { text: 'wait for me', tone: 'firmer' } });
@@ -334,6 +391,22 @@ describe('messages', () => {
     expect(res.statusCode).toBe(404);
     expect(res.json()).toHaveProperty('error');
     expect((await app.inject({ method: 'GET', url: '/api/nope' })).statusCode).toBe(401);
+  });
+});
+
+describe('shutting down', () => {
+  test('closing the server ends open event streams instead of hanging', async () => {
+    const cookies = await signIn();
+    const address = await app.listen({ port: 0, host: '127.0.0.1' });
+    const res = await fetch(`${address}/api/events`, { headers: { cookie: `parce_session=${cookies.parce_session}` } });
+    const reader = res.body!.getReader();
+    await reader.read();
+    const outcome = await Promise.race([
+      app.close().then(() => 'closed'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 3000)),
+    ]);
+    expect(outcome).toBe('closed');
+    await reader.cancel().catch(() => {});
   });
 });
 

@@ -4,6 +4,7 @@ import { EventBus, type AppEvent } from '../src/server/events.js';
 import { Store } from '../src/server/store.js';
 import { FakeTranslator } from '../src/server/translator/fake.js';
 import { FakeTransport } from '../src/server/transport/fake.js';
+import { ChatFilter } from '../src/server/transport/wa-map.js';
 import type { Translator } from '../src/server/types.js';
 
 let store: Store;
@@ -271,5 +272,80 @@ describe('profile', () => {
     expect(svc.profile()).toEqual({ instructions: 'CUSTOM', aboutUs: 'ABOUT', glossary: [{ term: 'parce', meaning: 'buddy' }] });
     store.setSetting('glossary', 'not json');
     expect(svc.profile().glossary).toEqual([]);
+  });
+});
+
+describe('after a restart', () => {
+  test('rows left on translating by the earlier run become failed and can be retried', async () => {
+    const old = new Store(':memory:');
+    old.insertMessage({
+      id: 'stuck', waId: 'S1', direction: 'in', source: 'juan', kind: 'text', original: 'hola', translation: null,
+      backTranslation: null, notes: [], ambiguity: null, status: 'translating', ts: 5, read: false,
+    });
+    const t = new FakeTranslator();
+    const fresh = new ConversationService({ store: old, translator: () => t, transport: new FakeTransport(), bus: new EventBus() });
+    fresh.start();
+    expect(old.getMessage('stuck')!.status).toBe('failed');
+    expect((await fresh.retry('stuck')).status).toBe('done');
+  });
+});
+
+describe('delivery', () => {
+  test('a delivery error from WhatsApp marks the sent message as failed and publishes it', async () => {
+    const m = await svc.send({ english: 'wait for me', spanish: 'esperame' });
+    transport.emitSendFailed(m.waId!);
+    expect(store.getMessage(m.id)!.status).toBe('failed');
+    expect(messageEvents().at(-1)).toMatchObject({ id: m.id, status: 'failed' });
+  });
+
+  test('a delivery error for an unknown or incoming message changes nothing', async () => {
+    transport.emitRaw({ waId: 'IN1', fromMe: false, ts: clock, kind: 'text', text: 'hola' });
+    await svc.settled();
+    transport.emitSendFailed('IN1');
+    transport.emitSendFailed('never-seen');
+    expect(store.listMessages({ limit: 10 })[0]!.status).toBe('done');
+  });
+
+  test('the exact text that went out is kept for resend requests, including appended English', async () => {
+    store.setSetting('append_english', '1');
+    const m = await svc.send({ english: 'wait for me', spanish: 'esperame' });
+    expect(store.getSentBody(m.waId!)).toBe('esperame\n\nwait for me');
+  });
+});
+
+describe('the allowed chat, end to end', () => {
+  const JUAN = '573001234567';
+  const raw = (remoteJid: string, id: string, extra: object = {}) => ({
+    key: { remoteJid, id, fromMe: false, ...extra },
+    message: { conversation: `text-${id}` },
+    messageTimestamp: 1700000000,
+  });
+  const deliver = (filter: ChatFilter, messages: ReturnType<typeof raw>[]) => {
+    for (const a of filter.accept(messages)) transport.emitRaw(a.inbound);
+  };
+
+  // Review Focus 1
+  test('a message from another chat, a group or a broadcast leaves no row and makes no translator call', async () => {
+    const filter = new ChatFilter({ lid: null });
+    filter.setChat(JUAN);
+    deliver(filter, [
+      raw('573009999999@s.whatsapp.net', 'OTHER'),
+      raw('120363012345678901@g.us', 'GROUP', { participant: `${JUAN}@s.whatsapp.net` }),
+      raw('status@broadcast', 'STATUS'),
+    ]);
+    await svc.settled();
+    expect(store.listMessages({ limit: 10 })).toHaveLength(0);
+    expect(translator.calls.incoming).toBe(0);
+    expect(messageEvents()).toHaveLength(0);
+  });
+
+  // Review Focus 2
+  test('a message addressed by LID is stored and translated, at start-up with a saved LID too', async () => {
+    const filter = new ChatFilter({ lid: '99887766554433@lid' });
+    filter.setChat(JUAN);
+    deliver(filter, [raw('99887766554433@lid', 'LIDONLY')]);
+    await svc.settled();
+    expect(store.listMessages({ limit: 10 }).map((m) => m.original)).toEqual(['text-LIDONLY']);
+    expect(translator.calls.incoming).toBe(1);
   });
 });

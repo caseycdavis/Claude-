@@ -75,6 +75,33 @@ test('first run, a message from Juan, a previewed reply, and a send that fails w
   expect(await sent.count()).toBe(1);
   expect(await sent.getByText('wait for me', { exact: true }).isVisible()).toBe(true);
 
+  // WhatsApp refusing the message afterwards shows on the bubble.
+  await page.evaluate(() => fetch('/api/demo/fail-last', { method: 'POST' }));
+  await expect.poll(() => sent.getByText('Not delivered').isVisible()).toBe(true);
+
+  // A half-written draft survives a trip to Settings and a reload.
+  await page.getByLabel('Message in English').fill('keep this draft');
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Back to the chat' }).click();
+  await expect.poll(() => page.getByLabel('Message in English').inputValue()).toBe('keep this draft');
+  await page.reload();
+  await expect.poll(() => page.getByLabel('Message in English').inputValue()).toBe('keep this draft');
+
+  // With preview switched off, the Return key never sends. Only the Send button does.
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByLabel('Show me the Spanish before it sends').uncheck();
+  await page.getByRole('button', { name: 'Back to the chat' }).click();
+  await page.getByLabel('Message in English').fill('half written');
+  await page.getByLabel('Message in English').press('Enter');
+  await page.waitForTimeout(500);
+  expect(await page.getByRole('listitem').filter({ hasText: 'half written' }).count()).toBe(0);
+  expect(await page.getByLabel('Message in English').inputValue()).toContain('half written');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect.poll(() => page.getByRole('listitem').filter({ hasText: '[ES:base] half written' }).count()).toBe(1);
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByLabel('Show me the Spanish before it sends').check();
+  await page.getByRole('button', { name: 'Back to the chat' }).click();
+
   // With the link down, a send is refused and the draft stays put.
   await page.getByRole('button', { name: 'Break the link' }).click();
   await expect.poll(() => page.getByText('WhatsApp link down').first().isVisible()).toBe(true);

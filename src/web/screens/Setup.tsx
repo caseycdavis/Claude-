@@ -244,10 +244,21 @@ function LinkCard({ link, ready }: { link: LinkStatus; ready: boolean }) {
 }
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  // Flips at once on the tap; the saved value then confirms it or puts it back.
+  const [value, setValue] = useState(checked);
+  useEffect(() => setValue(checked), [checked]);
   return (
     <label className="toggle">
       <span>{label}</span>
-      <input type="checkbox" role="switch" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <input
+        type="checkbox"
+        role="switch"
+        checked={value}
+        onChange={(e) => {
+          setValue(e.target.checked);
+          onChange(e.target.checked);
+        }}
+      />
     </label>
   );
 }
@@ -269,7 +280,8 @@ export function Setup({
   const [link, setLink] = useState<LinkStatus>(state.link ?? { state: 'unlinked', qr: null, pairingCode: null, since: Date.now() });
   useEffect(() => openEvents({ onLink: setLink }), []);
 
-  const ready = Boolean(state.hasKey && state.model && state.chatSet);
+  // Demo mode needs no key or number, so the chat is always reachable there.
+  const ready = state.demo || Boolean(state.hasKey && state.model && state.chatSet);
 
   return (
     <div className="shell">

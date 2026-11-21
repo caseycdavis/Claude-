@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, type WASocket } from 'baileys';
+import makeWASocket, { DisconnectReason, WAMessageStatus, useMultiFileAuthState, type WASocket } from 'baileys';
 import QRCode from 'qrcode';
 import type { LinkState, LinkStatus, Transport, TransportEvent } from '../types.js';
-import { isUserJid, learnLid, matchesChat, phoneJid, toInbound, type ChatMatcher, type KeyLike } from './wa-map.js';
+import { ChatFilter, phoneJid, type KeyLike, type RawMessage } from './wa-map.js';
 
 type Options = {
   /** Folder holding the WhatsApp session. Whoever has it has the whole account. */
@@ -10,6 +10,8 @@ type Options = {
   /** WhatsApp's opaque id for the allowed chat, when already learned. */
   lid?: string | null;
   onLid?: (lid: string) => void;
+  /** The exact text of a message this program sent, so it can be sent again if the other phone asks. */
+  getSentText?: (waId: string) => string | null;
   log?: (line: string) => void;
 };
 
@@ -41,6 +43,10 @@ function quietLogger(log: (line: string) => void): Logger {
   return logger;
 }
 
+function reason(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 const FIRST_RETRY_MS = 2_000;
 const MAX_RETRY_MS = 60_000;
 /** How many times a fresh linking code is fetched before waiting for the user to ask again. */
@@ -51,7 +57,7 @@ export class WhatsAppTransport implements Transport {
   private sock: WASocket | null = null;
   private readonly handlers: ((e: TransportEvent) => void)[] = [];
   private current: LinkStatus = { state: 'unlinked', qr: null, pairingCode: null, since: Date.now() };
-  private matcher: ChatMatcher;
+  private readonly filter: ChatFilter;
   private stopped = true;
   private connecting = false;
   private wasLinked = false;
@@ -63,7 +69,7 @@ export class WhatsAppTransport implements Transport {
   private readonly log: (line: string) => void;
 
   constructor(private readonly opts: Options) {
-    this.matcher = { digits: null, lid: opts.lid ?? null };
+    this.filter = new ChatFilter({ lid: opts.lid ?? null, onLid: opts.onLid });
     this.log = opts.log ?? (() => {});
   }
 
@@ -71,7 +77,6 @@ export class WhatsAppTransport implements Transport {
   async start(): Promise<void> {
     this.stopped = false;
     this.codeRefreshes = 0;
-    if (this.sock || this.connecting) return;
     await this.connect();
   }
 
@@ -92,16 +97,16 @@ export class WhatsAppTransport implements Transport {
   }
 
   setChat(phoneDigits: string | null): void {
-    const digits = phoneDigits && phoneDigits !== '' ? phoneDigits : null;
-    if (digits !== this.matcher.digits) this.matcher = { digits, lid: null };
+    this.filter.setChat(phoneDigits);
     void this.resolveLid();
   }
 
   async sendText(text: string): Promise<{ waId: string; ts: number }> {
     const sock = this.sock;
-    const digits = this.matcher.digits;
+    const digits = this.filter.matcher.digits;
     if (!sock || this.current.state !== 'linked') throw new Error('WhatsApp is not linked right now.');
     if (!digits) throw new Error('No chat has been chosen.');
+    // The only place this program writes to WhatsApp, and the address is always the allowed number.
     const sent = await sock.sendMessage(phoneJid(digits), { text });
     const waId = sent?.key?.id;
     if (!waId) throw new Error('WhatsApp did not confirm the message.');
@@ -111,7 +116,8 @@ export class WhatsAppTransport implements Transport {
   async markRead(waIds: string[]): Promise<void> {
     const sock = this.sock;
     if (!sock || this.current.state !== 'linked' || waIds.length === 0) return;
-    const fallback = this.matcher.lid ?? (this.matcher.digits ? phoneJid(this.matcher.digits) : null);
+    const { digits, lid } = this.filter.matcher;
+    const fallback = lid ?? (digits ? phoneJid(digits) : null);
     const keys = waIds
       .map((id) => this.keys.get(id) ?? (fallback ? { remoteJid: fallback, id, fromMe: false } : null))
       .filter((k): k is KeyLike => k !== null);
@@ -120,7 +126,10 @@ export class WhatsAppTransport implements Transport {
 
   async requestPairingCode(phoneDigits: string): Promise<string> {
     const sock = this.sock;
-    if (!sock || this.current.state !== 'linking') throw new Error('Open the link screen first, then ask for a number code.');
+    // Asking before the first code has arrived marks the session as registered too early and the link then fails.
+    if (!sock || this.current.state !== 'linking' || !this.current.qr) {
+      throw new Error('Wait for the linking code to appear, then ask for a number code.');
+    }
     const code = await sock.requestPairingCode(phoneDigits);
     this.setStatus('linking', { qr: this.current.qr, pairingCode: code });
     return code;
@@ -137,7 +146,7 @@ export class WhatsAppTransport implements Transport {
   }
 
   private async connect(): Promise<void> {
-    if (this.stopped || this.connecting) return;
+    if (this.stopped || this.connecting || this.sock) return;
     this.connecting = true;
     try {
       await fs.mkdir(this.opts.authDir, { recursive: true, mode: 0o700 });
@@ -151,17 +160,32 @@ export class WhatsAppTransport implements Transport {
         // Leave the phone as the device that shows as online, so it keeps getting notifications.
         markOnlineOnConnect: false,
         syncFullHistory: false,
-        // Groups, broadcasts and channels are never read. One-to-one chats are filtered per message below.
-        shouldIgnoreJid: (jid) => !isUserJid(jid),
+        // When the other phone could not read a message and asks for it again, hand back exactly what was sent.
+        getMessage: async (key) => {
+          const body = key.id ? this.opts.getSentText?.(key.id) : null;
+          return body ? { conversation: body } : undefined;
+        },
       });
       this.sock = sock;
 
-      sock.ev.on('creds.update', () => void saveCreds());
-      sock.ev.on('connection.update', (update) => void this.onConnection(sock, update));
+      sock.ev.on('creds.update', () => {
+        saveCreds().catch((e: unknown) => this.log(`whatsapp: could not save the session (${reason(e)})`));
+      });
+      sock.ev.on('connection.update', (update) => {
+        this.onConnection(sock, update).catch((e: unknown) => this.log(`whatsapp: connection handling failed (${reason(e)})`));
+      });
       sock.ev.on('messages.upsert', (event) => this.onMessages(event.messages));
+      sock.ev.on('messages.update', (updates) => {
+        for (const u of updates) {
+          // WhatsApp took the message and then refused it. Only ids this program sent can match a stored row.
+          if (u.key.fromMe && u.key.id && u.update.status === WAMessageStatus.ERROR) {
+            this.emit({ type: 'send-failed', waId: u.key.id });
+          }
+        }
+      });
       sock.ev.on('lid-mapping.update', (mapping) => this.onMapping(mapping));
     } catch (e) {
-      this.log(`whatsapp: could not start (${e instanceof Error ? e.message : String(e)})`);
+      this.log(`whatsapp: could not start (${reason(e)})`);
       this.scheduleRetry();
     } finally {
       this.connecting = false;
@@ -184,6 +208,7 @@ export class WhatsAppTransport implements Transport {
       this.wasLinked = true;
       this.retryMs = FIRST_RETRY_MS;
       this.codeRefreshes = 0;
+      this.log('whatsapp: linked');
       this.setStatus('linked');
       void this.resolveLid();
       return;
@@ -191,9 +216,9 @@ export class WhatsAppTransport implements Transport {
 
     if (update.connection !== 'close') return;
     this.sock = null;
-    if (this.stopped) return;
-
     const code = (update.lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
+    this.log(`whatsapp: connection closed (code ${code ?? 'none'})`);
+    if (this.stopped) return;
 
     if (code === DisconnectReason.loggedOut) {
       // The phone removed this device, or WhatsApp ended the session. The saved session is useless now.
@@ -225,46 +250,28 @@ export class WhatsAppTransport implements Transport {
     await this.connect();
   }
 
-  private onMessages(messages: { key: KeyLike; message?: unknown; messageTimestamp?: unknown }[]): void {
-    for (const m of messages) {
-      // Second gate: anything that is not the allowed chat stops here and is never stored or passed on.
-      if (!matchesChat(m.key, this.matcher)) continue;
-      const lid = learnLid(m.key, this.matcher);
-      if (lid) this.rememberLid(lid);
-      const inbound = toInbound(m);
-      if (!inbound) continue;
-      if (!inbound.fromMe) this.rememberKey(inbound.waId, m.key);
+  private onMessages(messages: RawMessage[]): void {
+    // Anything that is not the allowed chat stops inside accept() and is never stored or passed on.
+    for (const { inbound, key } of this.filter.accept(messages)) {
+      if (!inbound.fromMe) this.rememberKey(inbound.waId, key);
       this.emit({ type: 'message', message: inbound });
     }
   }
 
   private onMapping(mapping: { pn: string; lid: string }): void {
-    const digits = this.matcher.digits;
-    if (!digits) return;
-    if (matchesChat({ remoteJid: mapping.pn }, { digits, lid: null }) && mapping.lid.endsWith('@lid')) {
-      this.rememberLid(mapping.lid);
-    }
+    if (this.filter.matches({ remoteJid: mapping.pn })) this.filter.rememberLid(mapping.lid);
   }
 
   private async resolveLid(): Promise<void> {
     const sock = this.sock;
-    const digits = this.matcher.digits;
-    if (!sock || !digits || this.matcher.lid || this.current.state !== 'linked') return;
+    const { digits, lid } = this.filter.matcher;
+    if (!sock || !digits || lid || this.current.state !== 'linked') return;
     try {
-      const lid = await sock.signalRepository.lidMapping.getLIDForPN(phoneJid(digits));
-      if (lid && digits === this.matcher.digits) this.rememberLid(lid);
+      const found = await sock.signalRepository.lidMapping.getLIDForPN(phoneJid(digits));
+      if (found && digits === this.filter.matcher.digits) this.filter.rememberLid(found);
     } catch {
       // Not known yet. It is learned from the first message instead.
     }
-  }
-
-  private rememberLid(raw: string): void {
-    const at = raw.indexOf('@');
-    if (at === -1) return;
-    const lid = `${raw.slice(0, at).split(':')[0]}${raw.slice(at)}`;
-    if (!lid.endsWith('@lid') || lid === this.matcher.lid) return;
-    this.matcher = { ...this.matcher, lid };
-    this.opts.onLid?.(lid);
   }
 
   private rememberKey(waId: string, key: KeyLike): void {
@@ -305,7 +312,7 @@ export class WhatsAppTransport implements Transport {
       try {
         h(e);
       } catch (err) {
-        this.log(`whatsapp: a listener failed (${err instanceof Error ? err.message : String(err)})`);
+        this.log(`whatsapp: a listener failed (${reason(err)})`);
       }
     }
   }

@@ -80,6 +80,27 @@ Read `README.md` first. The design is in `docs/superpowers/specs/`, the build pl
 - **Translation is slow.** No effort level is set, so the model's default applies. Measure
   with the smoke script before changing anything, then try a lower effort in
   `output_config` in `claude.ts`.
+- **A sent message never arrives but shows as sent.** "Sent" means WhatsApp's server took
+  the message. A refusal that comes back afterwards marks the bubble "Not delivered"
+  (`messages.update` with an error status). A message lost on a connection that had quietly
+  died is not detected. Watch which `messages.update` statuses really arrive for sent
+  messages; if a server acknowledgement is reliable, add a "not confirmed" state for sends
+  that never get one.
+- **Number-code linking fails.** The app only asks for a number code after the first QR
+  code has arrived. If it still ends unlinked, link by QR instead and note what the log said.
+
+## Known gaps, left on purpose
+
+- The library decrypts messages from every chat before this program's filter drops the
+  ones that are not Juan's. Nothing from other chats is stored, shown, logged or sent to
+  the translator. The library's own `shouldIgnoreJid` option was not used because it answers
+  every ignored message with an error receipt, which is an unusual thing for an account to do.
+- Sending has no duplicate protection: if the app's request succeeds but its answer is lost,
+  pressing Send again sends twice.
+- Whoever opens the app first after install chooses the passphrase. Do step 4 straight
+  after step 3.
+- On the home network the app is plain HTTP, so the passphrase and messages cross the Wi-Fi
+  unencrypted until the private tunnel is set up.
 
 ## After it works
 

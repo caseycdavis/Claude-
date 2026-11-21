@@ -77,7 +77,8 @@ export function Bubble({ message, onChange }: { message: Message; onChange: (m: 
     body = <div className="mine">{message.original}</div>;
   }
 
-  const tail = incoming ? '' : message.source === 'phone' ? ' · Sent from WhatsApp' : ' · Sent';
+  const undelivered = !incoming && message.status === 'failed';
+  const tail = incoming || undelivered ? '' : message.source === 'phone' ? ' · Sent from WhatsApp' : ' · Sent';
 
   return (
     <li className={`row ${incoming ? 'in' : 'out'}`}>
@@ -95,6 +96,14 @@ export function Bubble({ message, onChange }: { message: Message; onChange: (m: 
           <AlertIcon />
           <span>
             <strong>Two readings.</strong> {message.ambiguity}
+          </span>
+        </div>
+      )}
+      {undelivered && (
+        <div className="flag">
+          <AlertIcon />
+          <span>
+            <strong>Not delivered.</strong> WhatsApp refused this message. Send it again.
           </span>
         </div>
       )}

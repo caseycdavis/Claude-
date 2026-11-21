@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  ChatFilter,
   digitsOnly,
   isUserJid,
   learnLid,
@@ -163,5 +164,77 @@ describe('toInbound', () => {
 
   test('falls back to the supplied clock when the timestamp is missing', () => {
     expect(toInbound({ key, message: { conversation: 'x' } }, () => 4242)!.ts).toBe(4242);
+  });
+});
+
+describe('ChatFilter', () => {
+  const text = (remoteJid: string, id: string, extra: object = {}) => ({
+    key: { remoteJid, id, fromMe: false, ...extra },
+    message: { conversation: `text-${id}` },
+    messageTimestamp: 1700000000,
+  });
+
+  test('a LID saved by an earlier run survives the number being applied at start-up', () => {
+    const f = new ChatFilter({ lid: JUAN_LID });
+    f.setChat(JUAN);
+    expect(f.matcher).toEqual({ digits: JUAN, lid: JUAN_LID });
+    expect(f.accept([text(JUAN_LID, 'L1')]).map((a) => a.inbound.text)).toEqual(['text-L1']);
+  });
+
+  test('changing to a different number forgets the old LID, and setting the same number keeps it', () => {
+    const f = new ChatFilter({ lid: JUAN_LID });
+    f.setChat(JUAN);
+    f.setChat(JUAN);
+    expect(f.matcher.lid).toBe(JUAN_LID);
+    f.setChat('15550001111');
+    expect(f.matcher).toEqual({ digits: '15550001111', lid: null });
+    f.setChat(null);
+    expect(f.matcher).toEqual({ digits: null, lid: null });
+  });
+
+  // Review Focus 1
+  test('accept keeps only the allowed chat and drops everything else', () => {
+    const f = new ChatFilter({ lid: null });
+    f.setChat(JUAN);
+    const out = f.accept([
+      text('573009999999@s.whatsapp.net', 'OTHER'),
+      text('120363012345678901@g.us', 'GROUP', { participant: JUAN_PN }),
+      text('status@broadcast', 'STATUS'),
+      text(JUAN_PN, 'MINE'),
+      text('11111111111111@lid', 'STRANGER-LID'),
+    ]);
+    expect(out.map((a) => a.inbound.waId)).toEqual(['MINE']);
+  });
+
+  test('accept drops everything while no chat is set', () => {
+    const f = new ChatFilter({ lid: null });
+    expect(f.accept([text(JUAN_PN, 'X')])).toEqual([]);
+  });
+
+  // Review Focus 2
+  test('accept learns the LID from the first message and then recognises the LID alone', () => {
+    const learned: string[] = [];
+    const f = new ChatFilter({ lid: null, onLid: (lid) => learned.push(lid) });
+    f.setChat(JUAN);
+    expect(f.accept([text(JUAN_LID, 'A', { remoteJidAlt: JUAN_PN })])).toHaveLength(1);
+    expect(learned).toEqual([JUAN_LID]);
+    expect(f.accept([text(JUAN_LID, 'B')])).toHaveLength(1);
+    expect(learned).toEqual([JUAN_LID]);
+  });
+
+  test('accept returns the original key for read receipts and skips messages with nothing to show', () => {
+    const f = new ChatFilter({ lid: null });
+    f.setChat(JUAN);
+    const reaction = { key: { remoteJid: JUAN_PN, id: 'R' }, message: { reactionMessage: { text: 'x' } }, messageTimestamp: 1 };
+    const out = f.accept([reaction, text(JUAN_PN, 'T')]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.key).toMatchObject({ remoteJid: JUAN_PN, id: 'T' });
+  });
+
+  test('matches tells whether a key belongs to the allowed chat', () => {
+    const f = new ChatFilter({ lid: null });
+    f.setChat(JUAN);
+    expect(f.matches({ remoteJid: JUAN_PN })).toBe(true);
+    expect(f.matches({ remoteJid: '573009999999@s.whatsapp.net' })).toBe(false);
   });
 });

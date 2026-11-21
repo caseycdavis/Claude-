@@ -62,10 +62,14 @@ cat > "$PLIST" <<EOF
 </plist>
 EOF
 
-# Stop an earlier copy if there is one, then start this one.
+# Stop an earlier copy if there is one, and wait until it is really gone before starting this one.
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+for _ in $(seq 1 40); do
+  launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.5
+done
+# RunAtLoad in the plist starts it as soon as it is loaded.
 launchctl bootstrap "$DOMAIN" "$PLIST"
-launchctl kickstart -k "$DOMAIN/$LABEL"
 
 echo "Waiting for Parce to answer"
 for _ in $(seq 1 30); do
